@@ -50,7 +50,7 @@ function Invoke-SqlFile {
     $containerPath = "/tmp/$ContainerFileName"
     Write-Host ''
     Write-Host "==> $Label" -ForegroundColor Cyan
-    Invoke-Compose -Arguments @('cp', $localPath, "\${DbService}:$containerPath")
+    Invoke-Compose -Arguments @('cp', $localPath, "$($DbService):$containerPath")
     Invoke-Compose -Arguments @('exec', '-T', $DbService, 'psql', '-U', $DbUser, '-d', $DbName, '-v', 'ON_ERROR_STOP=1', '-f', $containerPath)
 }
 
