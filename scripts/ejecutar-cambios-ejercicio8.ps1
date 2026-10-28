@@ -75,6 +75,17 @@ if (-not $ready) {
     throw 'PostgreSQL no estuvo listo en 60 segundos. Revisa: docker compose -f docker/compose.yml logs db'
 }
 
+# Crear respaldo local antes de cambiar el esquema.
+$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$backupName = "backup-antes-ejercicio8-$timestamp.sql"
+$backupLocalPath = Join-Path $RepoRoot $backupName
+$backupContainerPath = '/tmp/backup-antes-ejercicio8.sql'
+Write-Host ''
+Write-Host "==> Creando respaldo: $backupName" -ForegroundColor Cyan
+Invoke-Compose -Arguments @('exec', '-T', $DbService, 'pg_dump', '-U', $DbUser, '-d', $DbName, '-f', $backupContainerPath)
+Invoke-Compose -Arguments @('cp', "$($DbService):$backupContainerPath", $backupLocalPath)
+Write-Host "Respaldo guardado en: $backupLocalPath" -ForegroundColor Green
+
 # Issue #11: agrupar propuestas por tema y detectar propuestas similares.
 Invoke-SqlFile 'db\cambio-usuario.sql' 'e8-issue11-schema.sql' 'Issue #11 - aplicar cambio de esquema'
 Invoke-SqlFile 'db\diagramas\datos-demo-ejercicio8.sql' 'e8-issue11-demo.sql' 'Issue #11 - insertar datos de prueba marcados DEMO'
