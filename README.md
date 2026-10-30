@@ -205,3 +205,27 @@ python scripts/marcar_cambios.py
 The earlier approach wrapped each rewritten passage in a `\rev{}` macro that a preamble switch coloured. That marks whatever somebody remembered to wrap, not what actually changed, and after several rounds of corrections the two had drifted apart. The wrappers are gone from the source; [`scripts/marcar_cambios.py`](scripts/marcar_cambios.py) derives the marks with `latexdiff`, so they cannot fall behind the text. Tables and TikZ figures are compared as whole blocks rather than cell by cell — latexdiff's markup between `\midrule` and the rows does not compile — and the prose around each one carries the explanation.
 
 The repository contains no real municipal, personal, or production data. It is an academic prototype under the MIT license; see [LICENSE.md](LICENSE.md).
+
+
+## Reproducible seed for Database Practices 4 and 5
+
+The branch `practica4-5` contains an adjusted generator for the academic synthetic population. It requires a local `.env` file:
+
+```bash
+cp .env.example .env
+# Edit POSTGRES_PASSWORD and SECRET_KEY before starting the services.
+docker compose -f docker/compose.yml up -d --build
+docker compose -f docker/compose.yml --profile tools run --rm seed
+```
+
+The `seed` service runs only `scripts/generate_synthetic_data.py`, so the practice dataset is loaded in one transaction. The generator requires `DATABASE_URL` and has no hard-coded database password. The separate `scripts/seed_demo_users.py` utility is optional and is not part of the practice data load. It clears the previous **synthetic practice population** from the operational tables and the changing warehouse dimensions, while retaining the fixed time and event-type catalogs. Run it only against the dedicated local practice database; it is not intended for a database containing real municipal information.
+
+The monthly snapshot table is loaded with PostgreSQL `COPY`. The script also reports final row counts and compares individual `INSERT` with `COPY` on a temporary table. If any stage fails, PostgreSQL rolls back the complete data refresh. The demo accounts are seeded after the data load because the refresh clears the operational `personal` table.
+
+To check the declared article figures without connecting to PostgreSQL:
+
+```bash
+docker compose -f docker/compose.yml run --rm --entrypoint sh seed -c "pip install --quiet faker && python generate_synthetic_data.py --verificar"
+```
+
+That verification checks the population built in memory; it is not a substitute for the database row counts printed by the full seed.
