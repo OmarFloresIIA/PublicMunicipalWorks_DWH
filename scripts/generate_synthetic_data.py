@@ -4,27 +4,22 @@ Temascaltepec, Estado de México
 """
 import os
 import random
+import time
+import csv
+import io
 import sys
 import json
 from datetime import date, datetime, timedelta
 from faker import Faker
 import psycopg2
-from psycopg2.extras import execute_values
 
 # Configuración
 fake = Faker('es_MX')  # Datos en español de México
 random.seed(42)  # Para reproducibilidad
 fake.seed_instance(42)
 
-# Configuración de la base de datos (ajusta según tu entorno)
-DB_CONFIG = {
-    'dbname': 'obras_publicas',
-    'user': 'postgres',
-    'password': 'tu_password',
-    'host': 'localhost',
-    'port': '5432'
-}
-
+# La conexión se recibe exclusivamente por DATABASE_URL.
+# No se guardan credenciales en este archivo.
 # ============================================================
 # DATOS BASE REALISTAS DE TEMASCALTEPEC
 # ============================================================
@@ -173,19 +168,16 @@ def verificar_poblacion():
 # ============================================================
 
 def generar_dimensiones(conn):
-    """Genera todas las dimensiones del warehouse"""
+    """Prepara tiempo y fuentes; las demás dimensiones nacen de los disparadores."""
     cur = conn.cursor()
-    
-    print("Generando dim_tiempo...")
-    # Generar dim_tiempo (2024-2025)
-    fecha_inicio = datetime(2024, 1, 1)
+    print("Comprobando dimensión tiempo...")
+    fecha_actual = datetime(2024, 1, 1)
     fecha_fin = datetime(2025, 12, 31)
-    fecha_actual = fecha_inicio
-    
+
     while fecha_actual <= fecha_fin:
         tiempo_key = int(fecha_actual.strftime('%Y%m%d'))
         cur.execute("""
-            INSERT INTO warehouse.dim_tiempo 
+            INSERT INTO warehouse.dim_tiempo
             (tiempo_key, fecha, anio, trimestre, mes, mes_nombre, mes_nombre_corto,
              dia, dia_semana, dia_nombre, dia_nombre_corto, dia_del_anio,
              semana_del_anio, es_fin_de_semana, es_dia_habil,
@@ -193,15 +185,11 @@ def generar_dimensiones(conn):
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (tiempo_key) DO NOTHING
         """, (
-            tiempo_key,
-            fecha_actual.date(),
-            fecha_actual.year,
-            (fecha_actual.month - 1) // 3 + 1,
-            fecha_actual.month,
+            tiempo_key, fecha_actual.date(), fecha_actual.year,
+            (fecha_actual.month - 1) // 3 + 1, fecha_actual.month,
             fecha_actual.strftime('%B').capitalize(),
             fecha_actual.strftime('%b').capitalize(),
-            fecha_actual.day,
-            fecha_actual.isoweekday(),
+            fecha_actual.day, fecha_actual.isoweekday(),
             fecha_actual.strftime('%A').capitalize(),
             fecha_actual.strftime('%a').capitalize(),
             fecha_actual.timetuple().tm_yday,
@@ -209,143 +197,83 @@ def generar_dimensiones(conn):
             fecha_actual.isoweekday() >= 6,
             1 <= fecha_actual.isoweekday() <= 5,
             f"{fecha_actual.year}-{fecha_actual.year + 1}",
-            False,
-            fecha_actual.month == 12 and fecha_actual.day == 31
+            False, fecha_actual.month == 12 and fecha_actual.day == 31
         ))
         fecha_actual += timedelta(days=1)
-    
-    print("Generando dim_region...")
-    # Generar dim_region
-    # El identificador se construía con las tres primeras letras de la
-    # comunidad y del barrio: 'San Juan', 'San José', 'San Lucas' y otras
-    # veinte colapsaban en REG-SAN-…, así que de las 55 comunidades sólo
-    # llegaban 14 a la base y el artículo hablaba de 55. Se numera para que
-    # el identificador sea único por comunidad y barrio.
-    for ic, comunidad in enumerate(COMUNIDADES_TEMASCALTEPEC, 1):
-        for ib, barrio in enumerate(random.sample(BARRIOS, 3), 1):  # 3 barrios por comunidad
-            region_id = f"REG-{ic:03d}-{ib}"
-            cur.execute("""
-                INSERT INTO warehouse.dim_region (region_id, comunidad, barrio)
-                SELECT %s, %s, %s
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM warehouse.dim_region
-                    WHERE region_id = %s AND es_actual = TRUE)
-            """, (region_id, comunidad, barrio, region_id))
-    
-    print("Generando dim_constructora...")
-    # Generar dim_constructora
-    for i, nombre in enumerate(CONSTRUCTORAS, 1):
-        constructora_id = f"CONST-{i:03d}"
-        cur.execute("""
-            INSERT INTO warehouse.dim_constructora (constructora_id, rfc, nombre_const, tipo_ejecutor)
-            SELECT %s, %s, %s, %s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM warehouse.dim_constructora
-                WHERE constructora_id = %s AND es_actual = TRUE)
-        """, (constructora_id, fake.rfc(), nombre, random.choice(['Privada', 'Pública']), constructora_id))
-    
-    print("Generando dim_personal...")
-    # Generar dim_personal
-    for i in range(50):  # 50 empleados
-        personal_id = f"PER-{i+1:03d}"
-        rol = random.choice(ROLES_PERSONAL)
-        cur.execute("""
-            INSERT INTO warehouse.dim_personal (personal_id, nombre_completo, rol, es_supervisor, es_proyectista, es_director, es_secretario)
-            SELECT %s, %s, %s, %s, %s, %s, %s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM warehouse.dim_personal
-                WHERE personal_id = %s AND es_actual = TRUE)
-        """, (
-            personal_id,
-            fake.name(),
-            rol,
-            rol == 'Supervisor',
-            rol == 'Proyectista',
-            rol == 'Director',
-            rol == 'Secretario',
-            personal_id
-        ))
-    
+
     print("Generando fuentes de financiamiento...")
-    # Se insertan en la tabla operacional y el disparador sync_dim_fuente
-    # llena la dimensión. Antes se escribía dim_fuente directamente, con lo
-    # que public.fuente_presupuestaria quedaba vacía y ninguna obra podía
-    # enlazarse a su fuente.
     for fuente in FUENTES_FINANCIAMIENTO:
         cur.execute("""
             INSERT INTO public.fuente_presupuestaria (id_fuente, grado_nivel, programa)
             VALUES (%s, %s, %s)
             ON CONFLICT (id_fuente) DO NOTHING
         """, (fuente['id'], fuente['grado'], fuente['programa']))
-    
-    print("Generando dim_tipo_evento...")
-    # dim_tipo_evento ya está poblada por el DDL, verificar
-    cur.execute("SELECT COUNT(*) FROM warehouse.dim_tipo_evento")
-    count = cur.fetchone()[0]
-    if count == 0:
-        print("⚠️  dim_tipo_evento está vacía. Ejecuta primero el DDL del warehouse.")
-    
-    conn.commit()
-    print("✓ Dimensiones generadas correctamente")
 
+    cur.execute("SELECT COUNT(*) FROM warehouse.dim_tipo_evento")
+    if cur.fetchone()[0] == 0:
+        raise RuntimeError("warehouse.dim_tipo_evento está vacía. Ejecuta primero el DDL del almacén.")
+
+    print("✓ Dimensión tiempo y catálogo de eventos disponibles")
 
 def generar_operacional(conn):
-    """Puebla el esquema operacional a partir de las dimensiones.
-
-    Falta esta pieza y nada más funciona: public.obra tiene claves foráneas
-    a public.constructora, public.region y public.supervisor, y el generador
-    sólo llenaba las dimensiones del almacén. La primera obra fallaba con
-    «Key (id_constructora)=(CONST-002) is not present in table
-    "constructora"» y el conjunto sintético no llegaba a existir.
-
-    Se copian los identificadores desde las dimensiones para que ambos
-    esquemas hablen de las mismas entidades, que es justo lo que los
-    disparadores de sincronización suponen.
-    """
+    """Genera tablas padre; los disparadores crean sus dimensiones correspondientes."""
     cur = conn.cursor()
     print("Poblando el esquema operacional...")
 
-    cur.execute("""
-        INSERT INTO public.constructora (id_constructora, rfc, nombre_const, tipo_ejecutor)
-        SELECT constructora_id, rfc, nombre_const, tipo_ejecutor
-        FROM warehouse.dim_constructora WHERE es_actual = TRUE
-        ON CONFLICT (id_constructora) DO NOTHING
-    """)
+    for i, nombre in enumerate(CONSTRUCTORAS, 1):
+        cur.execute("""
+            INSERT INTO public.constructora
+                (id_constructora, rfc, nombre_const, tipo_ejecutor)
+            VALUES (%s, %s, %s, %s)
+        """, (
+            f"CONST-{i:03d}", fake.rfc(), nombre,
+            random.choice(["Privada", "Pública"])
+        ))
 
-    cur.execute("""
-        INSERT INTO public.region (id_region, comunidad, barrio)
-        SELECT region_id, comunidad, barrio
-        FROM warehouse.dim_region WHERE es_actual = TRUE
-        ON CONFLICT (id_region) DO NOTHING
-    """)
+    for ic, comunidad in enumerate(COMUNIDADES_TEMASCALTEPEC, 1):
+        for ib, barrio in enumerate(random.sample(BARRIOS, 3), 1):
+            cur.execute("""
+                INSERT INTO public.region (id_region, comunidad, barrio)
+                VALUES (%s, %s, %s)
+            """, (f"REG-{ic:03d}-{ib}", comunidad, barrio))
 
-    # `personal` exige nombre y apellido por separado; la dimensión guarda el
-    # nombre completo, así que se parte por el primer espacio.
-    cur.execute("""
-        INSERT INTO public.personal
-            (codigo_personal, nombre, apellido_paterno, apellido_materno, username, rol)
-        SELECT personal_id,
-               split_part(nombre_completo, ' ', 1),
-               COALESCE(NULLIF(split_part(nombre_completo, ' ', 2), ''), 'N'),
-               NULLIF(split_part(nombre_completo, ' ', 3), ''),
-               lower(personal_id),
-               rol
-        FROM warehouse.dim_personal WHERE es_actual = TRUE
-        ON CONFLICT (codigo_personal) DO NOTHING
-    """)
+    print("Generando personal municipal...")
+    for i in range(50):
+        rol = ROLES_PERSONAL[i % len(ROLES_PERSONAL)]
+        cur.execute("""
+            INSERT INTO public.personal
+                (codigo_personal, nombre, apellido_paterno, apellido_materno,
+                 username, rol)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            f"PER-{i + 1:03d}", fake.first_name(), fake.last_name(),
+            fake.last_name(), f"personal_{i + 1:03d}", rol
+        ))
 
     cur.execute("""
         INSERT INTO public.supervisor (codigo_personal, telefono)
         SELECT codigo_personal, '722-000-0000'
-        FROM public.personal WHERE rol = 'Supervisor'
-        ON CONFLICT (codigo_personal) DO NOTHING
+        FROM public.personal
+        WHERE rol = 'Supervisor'
+    """)
+    cur.execute("""
+        INSERT INTO public.proyectista (codigo_personal, empresa, id_constructora)
+        SELECT p.codigo_personal, c.nombre_const, c.id_constructora
+        FROM public.personal p
+        CROSS JOIN LATERAL (
+            SELECT id_constructora, nombre_const
+            FROM public.constructora
+            ORDER BY id_constructora LIMIT 1
+        ) c
+        WHERE p.rol = 'Proyectista'
     """)
 
-    conn.commit()
-    for tabla in ("constructora", "region", "personal", "supervisor"):
+    for tabla in ("constructora", "region", "personal", "supervisor",
+                  "proyectista", "fuente_presupuestaria"):
         cur.execute(f"SELECT COUNT(*) FROM public.{tabla}")
-        print(f"  public.{tabla}: {cur.fetchone()[0]}")
+        print(f"  public.{tabla}: {cur.fetchone()[0]:,}")
 
+    print("✓ Tablas padre del esquema operacional generadas")
 
 def generar_obras(conn, num_obras=TOTAL_OBRAS):
     """Genera obras públicas sintéticas.
@@ -432,7 +360,6 @@ def generar_obras(conn, num_obras=TOTAL_OBRAS):
                              else fecha_final.date(),
             })
     
-    conn.commit()
     print(f"✓ {len(obras_data)} obras generadas")
     return obras_data
 
@@ -467,7 +394,6 @@ def generar_presupuestos_e_informes(conn, obras_data):
             WHERE p.rol = 'Proyectista'
             ON CONFLICT (codigo_personal) DO NOTHING
         """)
-        conn.commit()
         cur.execute("SELECT codigo_personal FROM public.proyectista")
         proyectistas = [r[0] for r in cur.fetchall()]
 
@@ -527,7 +453,6 @@ def generar_presupuestos_e_informes(conn, obras_data):
             mes_actual = (date(mes_actual.year + 1, 1, 1) if mes_actual.month == 12
                           else date(mes_actual.year, mes_actual.month + 1, 1))
 
-    conn.commit()
     for tabla in ("presupuesto_obra", "informes", "costos"):
         cur.execute(f"SELECT COUNT(*) FROM public.{tabla}")
         print(f"  public.{tabla}: {cur.fetchone()[0]:,}")
@@ -586,80 +511,72 @@ def generar_eventos_auditoria(conn, obras_data, num_eventos=TOTAL_EVENTOS):
             
             eventos_generados += 1
     
-    conn.commit()
     print(f"✓ {eventos_generados} eventos de auditoría generados")
 
 
 def generar_snapshot_mensual(conn, obras_data):
-    """Genera snapshots mensuales de obras"""
+    """Carga los resúmenes por obra y mes con la instrucción masiva COPY."""
     cur = conn.cursor()
-    
-    print("Generando snapshots mensuales...")
-    
-    meses = [(2024, i) for i in range(1, 13)] + [(2025, i) for i in range(1, 13)]
+    print("Generando snapshots mensuales mediante COPY...")
 
-    # El artículo declara TOTAL_EVIDENCIAS imágenes en toda la cartera; se
-    # reparten aquí para que el total cuadre en lugar de sortear cada fila
-    # por separado y quedar en una cifra cualquiera.
+    meses = [(2024, i) for i in range(1, 13)] + [(2025, i) for i in range(1, 13)]
     evidencias = evidencias_por_registro(len(obras_data) * len(meses))
-    idx = 0
+
+    cur.execute("""
+        SELECT obra_id, obra_key
+        FROM warehouse.dim_obra
+        WHERE es_actual = TRUE
+    """)
+    claves_obra = {obra_id: obra_key for obra_id, obra_key in cur.fetchall()}
+
+    salida = io.StringIO()
+    escritor = csv.writer(salida, lineterminator="\n")
+    indice = 0
 
     for obra in obras_data:
+        obra_key = claves_obra.get(obra["obra_id"])
+        if obra_key is None:
+            raise RuntimeError(f"No se encontró la dimensión actual de {obra['obra_id']}.")
+
         for anio, mes in meses:
             tiempo_key = anio * 10000 + mes * 100 + 1
-            
-            # Calcular métricas simuladas
-            # max(0, ...) porque el rango puede quedar negativo en los meses
-            # anteriores al arranque de la serie y random.randint aborta con
-            # «empty range for randrange()».
             meses_transcurridos = max(0, (anio - 2024) * 12 + (mes - 1))
             avance_fisico = min(100, meses_transcurridos * random.randint(3, 8))
             avance_presup = min(100, meses_transcurridos * random.randint(4, 9))
-            
-            presupuesto_total = obra['presupuesto']
-            costo_acumulado = presupuesto_total * (avance_presup / 100)
-            saldo = presupuesto_total - costo_acumulado
-            
-            # El retraso sale de las fechas de la obra, no de un sorteo. La
-            # versión anterior lo sorteaba en [-30, 120] y el criterio C2 de
-            # v_anomalias_deteccion pide «más de 120», así que ese criterio no
-            # podía dispararse jamás sobre la población sembrada: la evaluación
-            # que corriera contra esta base habría medido una regla de dos
-            # criterios creyendo que medía tres.
-            fin_planeado = obra.get('fecha_fin')
-            corte = date(anio, mes, 1)
-            if fin_planeado:
-                dias_retraso = (corte - fin_planeado).days
-            else:
-                dias_retraso = random.randint(-30, 120)
-            
-            cur.execute("""
-                INSERT INTO warehouse.fact_obra_mensual
-                (tiempo_key, obra_key, presupuesto_total, costo_acumulado,
-                 saldo_presupuesto, porcentaje_ejercido, avance_fisico_acumulado,
-                 avance_presup_acumulado, dias_retraso, informes_registrados,
-                 imagenes_evidencia, permisos_obtenidos, tiene_retraso)
-                VALUES (
-                    %s,
-                    (SELECT obra_key FROM warehouse.dim_obra WHERE obra_id = %s AND es_actual = TRUE),
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                )
-                ON CONFLICT (tiempo_key, obra_key) DO NOTHING
-            """, (
-                tiempo_key, obra['obra_id'],
-                presupuesto_total, costo_acumulado, saldo,
-                (costo_acumulado / presupuesto_total * 100) if presupuesto_total > 0 else 0,
-                avance_fisico, avance_presup, dias_retraso,
-                random.randint(0, meses_transcurridos),
-                evidencias[idx],
-                random.randint(0, 5),
-                dias_retraso > 60
-            ))
-            idx += 1
-    
-    conn.commit()
-    print("✓ Snapshots mensuales generados")
+            presupuesto_total = obra["presupuesto"]
+            costo_acumulado = round(presupuesto_total * (avance_presup / 100), 2)
+            saldo = round(presupuesto_total - costo_acumulado, 2)
 
+            fin_planeado = obra.get("fecha_fin")
+            corte = date(anio, mes, 1)
+            dias_retraso = (
+                (corte - fin_planeado).days
+                if fin_planeado else random.randint(-30, 120)
+            )
+
+            escritor.writerow((
+                tiempo_key, obra_key, f"{presupuesto_total:.2f}",
+                f"{costo_acumulado:.2f}", f"{saldo:.2f}",
+                f"{(costo_acumulado / presupuesto_total * 100) if presupuesto_total > 0 else 0:.2f}",
+                avance_fisico, avance_presup, dias_retraso,
+                random.randint(0, meses_transcurridos), evidencias[indice],
+                random.randint(0, 5), dias_retraso > 60
+            ))
+            indice += 1
+
+    salida.seek(0)
+    cur.copy_expert("""
+        COPY warehouse.fact_obra_mensual
+        (tiempo_key, obra_key, presupuesto_total, costo_acumulado,
+         saldo_presupuesto, porcentaje_ejercido, avance_fisico_acumulado,
+         avance_presup_acumulado, dias_retraso, informes_registrados,
+         imagenes_evidencia, permisos_obtenidos, tiene_retraso)
+        FROM STDIN WITH (FORMAT CSV)
+    """, salida)
+    cur.execute("SELECT COUNT(*) FROM warehouse.fact_obra_mensual")
+    insertadas = cur.fetchone()[0]
+    print(f"✓ {insertadas:,} snapshots mensuales cargados por COPY")
+    return insertadas
 
 def generar_pobladores_y_propuestas(conn, num_pobladores=2341, num_propuestas=2156):
     """
@@ -712,7 +629,6 @@ def generar_pobladores_y_propuestas(conn, num_pobladores=2341, num_propuestas=21
         propuesta_id = cur.fetchone()[0]
         propuestas_ids.append(propuesta_id)
     
-    conn.commit()
     print(f"✓ {num_propuestas} propuestas generadas")
     
     return pobladores_ids, propuestas_ids
@@ -781,7 +697,6 @@ def generar_votos_propuestas(conn, pobladores_ids, propuestas_ids, num_votos=872
             f"Voto emitido por poblador {poblador_id} para propuesta {propuesta_id}"
         ))
     
-    conn.commit()
     print(f"✓ {num_votos} votos generados")
 
 
@@ -789,82 +704,175 @@ def generar_votos_propuestas(conn, pobladores_ids, propuestas_ids, num_votos=872
 # EJECUCIÓN PRINCIPAL
 # ============================================================
 
+def limpiar_datos_sinteticos(conn):
+    """Vacía las tablas de población académica para repetir la carga sin duplicados.
+
+    Ejecutar solo en la base de práctica: esta rutina borra la población sintética.
+    """
+    cur = conn.cursor()
+    print("Limpiando la población sintética anterior...")
+    cur.execute("""
+        TRUNCATE TABLE
+            public.imagenes_informe,
+            public.firmantes,
+            public.permisos,
+            public.costos,
+            public.presupuesto_obra,
+            public.opcion_seleccion,
+            public.informes,
+            public.acta_entrega,
+            public.votos_propuestas,
+            public.propuestas_obras,
+            public.financia,
+            public.obra,
+            public.supervisor,
+            public.proyectista,
+            public.pobladores,
+            public.personal,
+            public.fuente_presupuestaria,
+            public.region,
+            public.constructora,
+            warehouse.fact_eventos_auditoria,
+            warehouse.fact_obra_mensual,
+            warehouse.dim_obra,
+            warehouse.dim_region,
+            warehouse.dim_constructora,
+            warehouse.dim_personal,
+            warehouse.dim_fuente,
+            warehouse.dim_presupuesto,
+            warehouse.dim_poblador,
+            warehouse.dim_propuesta
+        RESTART IDENTITY CASCADE
+    """)
+    print("✓ Datos sintéticos anteriores eliminados; los catálogos fijos se conservan")
+
+
+def reportar_conteos(conn):
+    """Los conteos finales equivalen a filas insertadas porque se inicia vaciando."""
+    tablas = [
+        "public.constructora", "public.fuente_presupuestaria", "public.region",
+        "public.personal", "public.supervisor", "public.proyectista",
+        "public.obra", "public.financia", "public.presupuesto_obra",
+        "public.informes", "public.costos", "public.pobladores",
+        "public.propuestas_obras", "public.votos_propuestas",
+        "warehouse.dim_tiempo", "warehouse.dim_tipo_evento",
+        "warehouse.dim_region", "warehouse.dim_constructora",
+        "warehouse.dim_personal", "warehouse.dim_fuente",
+        "warehouse.dim_presupuesto", "warehouse.dim_poblador",
+        "warehouse.dim_propuesta", "warehouse.fact_eventos_auditoria",
+        "warehouse.fact_obra_mensual"
+    ]
+    cur = conn.cursor()
+    print("\nConteo final por tabla (carga desde tablas vacías):")
+    print(f"{'Tabla':44s} {'Insertadas':>12s} {'Rechazadas':>12s}")
+    for tabla in tablas:
+        cur.execute(f"SELECT COUNT(*) FROM {tabla}")
+        cantidad = cur.fetchone()[0]
+        print(f"{tabla:44s} {cantidad:12,d} {0:12,d}")
+    cur.execute("SELECT COALESCE(SUM(imagenes_evidencia), 0) FROM warehouse.fact_obra_mensual")
+    print(f"\nEvidencias representadas en snapshots: {cur.fetchone()[0]:,}")
+    print("Rechazadas: 0; el generador crea valores válidos y la carga revierte si hay un error.")
+
+
+def comparar_insert_y_copy(conn, cantidad=3000):
+    """Compara INSERT individual frente a COPY con el mismo lote de prueba."""
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TEMP TABLE prueba_carga_masiva (
+            id INTEGER PRIMARY KEY,
+            descripcion TEXT NOT NULL
+        ) ON COMMIT DROP
+    """)
+    filas = [(i, f"Registro de comparación {i}") for i in range(1, cantidad + 1)]
+
+    inicio = time.perf_counter()
+    for fila in filas:
+        cur.execute(
+            "INSERT INTO prueba_carga_masiva (id, descripcion) VALUES (%s, %s)",
+            fila
+        )
+    tiempo_insert = time.perf_counter() - inicio
+
+    cur.execute("TRUNCATE prueba_carga_masiva")
+    buffer = io.StringIO()
+    escritor = csv.writer(buffer, lineterminator="\n")
+    escritor.writerows(filas)
+    buffer.seek(0)
+
+    inicio = time.perf_counter()
+    cur.copy_expert(
+        "COPY prueba_carga_masiva (id, descripcion) FROM STDIN WITH (FORMAT CSV)",
+        buffer
+    )
+    tiempo_copy = time.perf_counter() - inicio
+    cur.execute("SELECT COUNT(*) FROM prueba_carga_masiva")
+    comprobadas = cur.fetchone()[0]
+
+    print(f"\nComparación temporal de {cantidad:,} filas en tabla temporal:")
+    print(f"INSERT individual: {tiempo_insert:.4f} s")
+    print(f"COPY:              {tiempo_copy:.4f} s")
+    if tiempo_copy > 0:
+        print(f"Relación INSERT/COPY: {tiempo_insert / tiempo_copy:.2f}x")
+    print(f"Filas comprobadas: {comprobadas:,}")
+
+
 def main():
     print("=" * 70)
     print("GENERADOR DE DATOS SINTÉTICOS - OBRAS PÚBLICAS TEMASCALTEPEC")
     print("=" * 70)
-    print("\n⚠️  ADVERTENCIA: Este script genera datos SINTÉTICOS para fines")
-    print("   académicos y de demostración. Los datos NO son reales.\n")
-    
+    print("ADVERTENCIA: los datos son sintéticos y no son registros municipales reales.")
+
+    dsn = os.getenv("DATABASE_URL")
+    if not dsn:
+        sys.exit("ERROR: define DATABASE_URL. No existe una conexión predeterminada ni credenciales dentro del script.")
+
+    conn = None
+    inicio = time.perf_counter()
     try:
-        # Conectar a la base de datos
-        print("Conectando a la base de datos...")
-        # DATABASE_URL tiene prioridad, igual que en la API: es lo que
-        # permite ejecutar esto contra el contenedor de docker/compose.yml
-        # sin editar DB_CONFIG a mano.
-        dsn = os.getenv("DATABASE_URL")
-        conn = psycopg2.connect(dsn) if dsn else psycopg2.connect(**DB_CONFIG)
-        print("✓ Conexión establecida\n")
-        
-        # Generar dimensiones
-        generar_dimensiones(conn)
+        print("\nConectando a PostgreSQL...")
+        conn = psycopg2.connect(dsn)
+        print("✓ Conexión establecida")
 
-        # Sin el esquema operacional poblado, las obras no pasan sus claves
-        # foráneas; tiene que ir entre las dimensiones y las obras.
-        generar_operacional(conn)
-        
-        # Generar obras
-        obras_data = generar_obras(conn, num_obras=TOTAL_OBRAS)
-        
-        # Generar eventos de auditoría
-        generar_eventos_auditoria(conn, obras_data, num_eventos=8934)
-        
-        # Presupuestos, costos e informes: el snapshot mensual lee de aquí.
-        generar_presupuestos_e_informes(conn, obras_data)
+        # Todas las etapas ocurren en una transacción. El context manager
+        # confirma al final o revierte el proceso completo ante una excepción.
+        with conn:
+            limpiar_datos_sinteticos(conn)
+            generar_dimensiones(conn)
+            generar_operacional(conn)
+            obras_data = generar_obras(conn, num_obras=TOTAL_OBRAS)
+            generar_eventos_auditoria(conn, obras_data, num_eventos=TOTAL_EVENTOS)
+            generar_presupuestos_e_informes(conn, obras_data)
+            generar_snapshot_mensual(conn, obras_data)
 
-        # Generar snapshots mensuales
-        generar_snapshot_mensual(conn, obras_data)
-        
-        # Generar ciudadanos, propuestas y votos
-        pobladores_ids, propuestas_ids = generar_pobladores_y_propuestas(
-        conn, 
-        num_pobladores=TOTAL_POBLADORES,
-        num_propuestas=TOTAL_PROPUESTAS
-        )
-        
-        # Generar votos (8,723 votos - número realista independiente de eventos de auditoría)
-        generar_votos_propuestas(
-        conn,
-        pobladores_ids,
-        propuestas_ids,
-        num_votos=TOTAL_VOTOS
-        )
-    
-        print("\n" + "=" * 70)
-        print("✓ GENERACIÓN COMPLETADA EXITOSAMENTE")
-        print("=" * 70)
-        print("\n📊 Resumen de datos generados:")
-        print("   - 1,247 obras públicas")
-        print("   - 8,934 eventos de auditoría")
-        print("   - 2,341 ciudadanos registrados")
-        print("   - 2,156 propuestas ciudadanas")
-        print("   - 8,723 votos emitidos en procesos participativos")  # ← ACTUALIZADO
-        print("   - Snapshots mensuales (2024-2025)")
-        print("   - Dimensiones completas")
-        
+            pobladores_ids, propuestas_ids = generar_pobladores_y_propuestas(
+                conn, num_pobladores=TOTAL_POBLADORES,
+                num_propuestas=TOTAL_PROPUESTAS
+            )
+            generar_votos_propuestas(
+                conn, pobladores_ids, propuestas_ids, num_votos=TOTAL_VOTOS
+            )
+            reportar_conteos(conn)
+            comparar_insert_y_copy(conn)
+
         conn.close()
-        
-    except psycopg2.Error as e:
-        print(f"\n❌ Error de base de datos: {e}")
-        print("\n💡 Solución: Verifica la configuración en DB_CONFIG")
-    except Exception as e:
-        print(f"\n❌ Error inesperado: {e}")
-        import traceback
-        traceback.print_exc()
+        conn = None
+        print("\n" + "=" * 70)
+        print("✓ GENERACIÓN COMPLETADA Y CONFIRMADA")
+        print(f"Tiempo total: {time.perf_counter() - inicio:.2f} segundos")
+        print("=" * 70)
+        print("Una sola transacción: toda la carga se confirmó.")
+        return 0
+
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+            conn.close()
+        print(f"\nERROR: la carga fue revertida por completo: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':
-    # --verificar comprueba las cifras del artículo sin necesitar PostgreSQL
     if '--verificar' in sys.argv:
         sys.exit(0 if verificar_poblacion() else 1)
-    main()
+    sys.exit(main())
+
