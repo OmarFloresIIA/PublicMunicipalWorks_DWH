@@ -218,7 +218,7 @@ docker compose -f docker/compose.yml up -d --build
 docker compose -f docker/compose.yml --profile tools run --rm seed
 ```
 
-The `seed` service runs `scripts/generate_synthetic_data.py` first and then creates the read-only demonstration users. The generator requires `DATABASE_URL`, has no hard-coded database password, and performs the dataset refresh in one transaction. It clears the previous **synthetic practice population** from the operational tables and the changing warehouse dimensions, while retaining the fixed time and event-type catalogs. Run it only against the dedicated local practice database; it is not intended for a database containing real municipal information.
+The `seed` service runs only `scripts/generate_synthetic_data.py`, so the practice dataset is loaded in one transaction. The generator requires `DATABASE_URL` and has no hard-coded database password. The separate `scripts/seed_demo_users.py` utility is optional and is not part of the practice data load. It clears the previous **synthetic practice population** from the operational tables and the changing warehouse dimensions, while retaining the fixed time and event-type catalogs. Run it only against the dedicated local practice database; it is not intended for a database containing real municipal information.
 
 The monthly snapshot table is loaded with PostgreSQL `COPY`. The script also reports final row counts and compares individual `INSERT` with `COPY` on a temporary table. If any stage fails, PostgreSQL rolls back the complete data refresh. The demo accounts are seeded after the data load because the refresh clears the operational `personal` table.
 
