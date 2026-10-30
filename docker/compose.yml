@@ -71,8 +71,7 @@ services:
     profiles: ["tools"]
     command: >
       sh -c "pip install --quiet faker &&
-             python generate_synthetic_data.py &&
-             python seed_demo_users.py"
+             python generate_synthetic_data.py"
 
 volumes:
   datos:
