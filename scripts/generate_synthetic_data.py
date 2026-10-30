@@ -146,8 +146,10 @@ def verificar_poblacion():
         ("Presupuesto (MXN)", round(sum(montos), 2), float(PRESUPUESTO_TOTAL)),
         ("Evidencias", sum(evidencias), TOTAL_EVIDENCIAS),
         ("Eventos de auditoría", TOTAL_EVENTOS, TOTAL_EVENTOS),
+        ("Pobladores", TOTAL_POBLADORES, TOTAL_POBLADORES),
         ("Propuestas", TOTAL_PROPUESTAS, TOTAL_PROPUESTAS),
         ("Votos", TOTAL_VOTOS, TOTAL_VOTOS),
+        ("Snapshots obra-mes", registros, registros),
     ]
     ancho = max(len(f[0]) for f in filas)
     ok = True
@@ -759,7 +761,7 @@ def reportar_conteos(conn):
         "public.firmantes", "public.imagenes_informe",
         "warehouse.dim_region", "warehouse.dim_constructora",
         "warehouse.dim_personal", "warehouse.dim_fuente",
-        "warehouse.dim_presupuesto", "warehouse.dim_poblador",
+        "warehouse.dim_presupuesto", "warehouse.dim_obra", "warehouse.dim_poblador",
         "warehouse.dim_propuesta", "warehouse.fact_eventos_auditoria",
         "warehouse.fact_obra_mensual"
     ]
