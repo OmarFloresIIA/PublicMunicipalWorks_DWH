@@ -225,7 +225,7 @@ The monthly snapshot table is loaded with PostgreSQL `COPY`. The script also rep
 To check the declared article figures without connecting to PostgreSQL:
 
 ```bash
-docker compose -f docker/compose.yml run --rm seed python scripts/generate_synthetic_data.py --verificar
+docker compose -f docker/compose.yml run --rm --entrypoint sh seed -c "pip install --quiet faker && python generate_synthetic_data.py --verificar"
 ```
 
 That verification checks the population built in memory; it is not a substitute for the database row counts printed by the full seed.
