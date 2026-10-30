@@ -748,7 +748,7 @@ def limpiar_datos_sinteticos(conn):
 
 
 def reportar_conteos(conn):
-    """Los conteos finales equivalen a filas insertadas porque se inicia vaciando."""
+    """Informa filas del conjunto cargado y separa los catálogos precargados por DDL."""
     tablas = [
         "public.constructora", "public.fuente_presupuestaria", "public.region",
         "public.personal", "public.supervisor", "public.proyectista",
@@ -757,7 +757,6 @@ def reportar_conteos(conn):
         "public.propuestas_obras", "public.votos_propuestas",
         "public.acta_entrega", "public.opcion_seleccion", "public.permisos",
         "public.firmantes", "public.imagenes_informe",
-        "warehouse.dim_tiempo", "warehouse.dim_tipo_evento",
         "warehouse.dim_region", "warehouse.dim_constructora",
         "warehouse.dim_personal", "warehouse.dim_fuente",
         "warehouse.dim_presupuesto", "warehouse.dim_poblador",
@@ -765,15 +764,21 @@ def reportar_conteos(conn):
         "warehouse.fact_obra_mensual"
     ]
     cur = conn.cursor()
-    print("\nConteo final por tabla (carga desde tablas vacías):")
+    print("\nConteo final por tabla (filas generadas por el script):")
     print(f"{'Tabla':44s} {'Insertadas':>12s} {'Rechazadas':>12s}")
     for tabla in tablas:
         cur.execute(f"SELECT COUNT(*) FROM {tabla}")
         cantidad = cur.fetchone()[0]
         print(f"{tabla:44s} {cantidad:12,d} {0:12,d}")
+
+    print("\nCatálogos precargados por el DDL:")
+    for tabla in ("warehouse.dim_tiempo", "warehouse.dim_tipo_evento"):
+        cur.execute(f"SELECT COUNT(*) FROM {tabla}")
+        print(f"  {tabla}: {cur.fetchone()[0]:,} (no insertadas por este script)")
+
     cur.execute("SELECT COALESCE(SUM(imagenes_evidencia), 0) FROM warehouse.fact_obra_mensual")
     print(f"\nEvidencias representadas en snapshots: {cur.fetchone()[0]:,}")
-    print("Rechazadas: 0; el generador crea valores válidos y la carga revierte si hay un error.")
+    print("Rechazadas: 0; el generador produce valores válidos y revierte toda la carga si encuentra un error.")
 
 
 def comparar_insert_y_copy(conn, cantidad=3000):
