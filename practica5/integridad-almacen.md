@@ -106,16 +106,16 @@ El script realiza este procedimiento:
 
 1. Consulta el catálogo de PostgreSQL para mostrar las claves foráneas declaradas en las tablas originales de hechos y si están validadas.
 2. Muestra cuántos registros hay en cada tabla de hechos.
-3. Crea copias de prueba de `fact_eventos_auditoria` y `fact_obra_mensual`, con sus datos, pero sin copiar sus claves foráneas.
+3. Crea copias de `fact_eventos_auditoria` y `fact_obra_mensual` dentro de un esquema separado llamado `ejercicio_2_5_copia`, con sus datos, pero sin copiar sus claves foráneas.
 4. Busca referencias a dimensiones inexistentes mediante `LEFT JOIN` y `NOT EXISTS`. Las referencias opcionales con valor `NULL` no se cuentan como huérfanas.
 5. Intenta agregar a las copias las mismas doce claves foráneas del esquema original.
 6. Muestra las claves creadas en las copias.
 
 ### 3.1. ¿Por qué se prueban las relaciones en copias?
 
-Como las doce claves ya aparecen en el esquema original, el punto que pide agregarlas solo sería necesario si faltaran. En este caso se vuelven a crear en las copias de prueba para comprobar directamente que todos los registros actuales pueden quedar protegidos por esas relaciones, sin alterar la base original.
+Como las doce claves ya aparecen en el esquema original, el punto que pide agregarlas solo sería necesario si faltaran. En este caso se vuelven a crear en las copias para comprobar directamente que todos los registros actuales pueden quedar protegidos por esas relaciones, sin alterar la base original. Las copias son tablas normales dentro del esquema de prueba, porque PostgreSQL no permite definir claves foráneas desde una tabla temporal hacia una tabla permanente. El script elimina el esquema `ejercicio_2_5_copia` al finalizar.
 
-Si existe una referencia a una dimensión que no está presente, la consulta de huérfanos mostrará el registro y la incorporación de la clave foránea correspondiente fallará. Si el script llega al mensaje final, las doce relaciones pudieron agregarse a las copias.
+Si existe una referencia a una dimensión que no está presente, la consulta de huérfanos mostrará el registro y la incorporación de la clave foránea correspondiente fallará. Si el script llega al mensaje final, las doce relaciones pudieron agregarse a las copias. El esquema de prueba se elimina al terminar, incluso si la transacción se revierte por un error.
 
 ### 3.2. Instrucciones para levantar y poblar la base
 
