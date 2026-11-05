@@ -46,7 +46,7 @@ WHERE c.contype = 'f'
       'warehouse.fact_eventos_auditoria'::regclass,
       'warehouse.fact_obra_mensual'::regclass
   )
-ORDER BY tabla_hechos::text, nombre_restriccion;
+ORDER BY c.conrelid::regclass::text, c.conname;
 
 \echo ''
 \echo '2. Registros actuales en las tablas de hechos'
