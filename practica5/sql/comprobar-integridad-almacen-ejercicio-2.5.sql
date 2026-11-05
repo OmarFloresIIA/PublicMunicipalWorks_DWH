@@ -18,7 +18,7 @@
 
 BEGIN;
 
-DO $
+DO $fn$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_namespace
@@ -28,7 +28,7 @@ BEGIN
             'Ya existe el esquema ejercicio_2_5_copia. Revísalo antes de volver a ejecutar el script.';
     END IF;
 END
-$;
+$fn$;
 
 CREATE SCHEMA ejercicio_2_5_copia;
 
